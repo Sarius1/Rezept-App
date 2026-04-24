@@ -1,11 +1,11 @@
 {
-  "name": "Rezept Extraktor",
+  "name": "Meine Rezepte",
   "short_name": "Rezepte",
-  "description": "Extrahiere Rezepte aus Reels, Videos und Texten",
+  "description": "Persönliche Rezeptsammlung",
   "start_url": ".",
   "display": "standalone",
-  "background_color": "#09090b",
-  "theme_color": "#18181b",
+  "background_color": "#ffffff",
+  "theme_color": "#16a34a",
   "icons": [
     {
       "src": "icon-192.png",
@@ -19,14 +19,5 @@
       "type": "image/png",
       "purpose": "any maskable"
     }
-  ],
-  "share_target": {
-    "action": ".",
-    "method": "GET",
-    "params": {
-      "url": "url",
-      "text": "text",
-      "title": "title"
-    }
-  }
+  ]
 }
