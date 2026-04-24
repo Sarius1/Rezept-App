@@ -14,16 +14,25 @@ function genId() {
 }
 
 /* ── Theme ───────────────────────────────────────────────── */
-function applyTheme(t) {
-  document.documentElement.setAttribute('data-theme',
-    t === 'system'
-      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : t
-  );
+function isDark() {
+  const t = localStorage.getItem(THEME_KEY) || 'system';
+  return t === 'dark' || (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 }
-applyTheme(localStorage.getItem(THEME_KEY) || 'system');
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', isDark() ? 'dark' : 'light');
+  const dark = isDark();
+  const sun = document.getElementById('themeIconSun');
+  const moon = document.getElementById('themeIconMoon');
+  if (sun && moon) { sun.style.display = dark ? 'block' : 'none'; moon.style.display = dark ? 'none' : 'block'; }
+}
+applyTheme();
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-  if ((localStorage.getItem(THEME_KEY) || 'system') === 'system') applyTheme('system');
+  if ((localStorage.getItem(THEME_KEY) || 'system') === 'system') applyTheme();
+});
+
+document.getElementById('btnTheme').addEventListener('click', () => {
+  localStorage.setItem(THEME_KEY, isDark() ? 'light' : 'dark');
+  applyTheme();
 });
 
 /* ── View Router ─────────────────────────────────────────── */
