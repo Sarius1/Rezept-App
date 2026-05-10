@@ -314,6 +314,158 @@ function readFileAsDataURL(file, cb) {
   reader.readAsDataURL(file);
 }
 
+/* ── Import: Status Helper ───────────────────────────────── */
+function setImportStatus(msg, type = 'loading') {
+  const el = document.getElementById('importStatus');
+  el.textContent = msg;
+  el.className = `import-status ${type}`;
+  el.classList.remove('hidden');
+}
+function clearImportStatus() {
+  document.getElementById('importStatus').classList.add('hidden');
+}
+
+/* ── Import: Bild scannen (Tesseract.js) ─────────────────── */
+document.getElementById('btnScanImg').addEventListener('click', () => {
+  document.getElementById('ocrFileInput').click();
+});
+
+document.getElementById('ocrFileInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  e.target.value = '';
+
+  setImportStatus('Tesseract wird geladen…');
+  try {
+    await loadTesseract();
+    setImportStatus('Bild wird gescannt…');
+    const result = await Tesseract.recognize(file, 'deu+eng', { logger: () => {} });
+    const text = result.data.text.trim();
+    if (!text) { setImportStatus('Kein Text erkannt. Versuche ein schärferes Bild.', 'err'); return; }
+    const existing = document.getElementById('fText').value.trim();
+    document.getElementById('fText').value = existing ? existing + '\n\n' + text : text;
+    setImportStatus('Text erfolgreich erkannt und eingefügt.', 'ok');
+    setTimeout(clearImportStatus, 3000);
+  } catch (err) {
+    setImportStatus('Fehler beim Scannen: ' + err.message, 'err');
+  }
+});
+
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Tesseract konnte nicht geladen werden'));
+    document.head.appendChild(s);
+  });
+}
+
+/* ── Import: Von Website ─────────────────────────────────── */
+const SOCIAL = ['instagram.com', 'tiktok.com', 'youtube.com', 'youtu.be', 'twitter.com', 'x.com', 'facebook.com'];
+
+document.getElementById('btnFromUrl').addEventListener('click', () => {
+  const wrap = document.getElementById('urlImportWrap');
+  wrap.classList.toggle('hidden');
+  if (!wrap.classList.contains('hidden')) document.getElementById('importUrlInput').focus();
+});
+
+document.getElementById('btnFetchUrl').addEventListener('click', () => {
+  const url = document.getElementById('importUrlInput').value.trim();
+  if (!url) return;
+  importFromUrl(url);
+});
+
+document.getElementById('importUrlInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('btnFetchUrl').click();
+});
+
+async function importFromUrl(url) {
+  if (SOCIAL.some(d => url.includes(d))) {
+    setImportStatus('Instagram, TikTok & Co. erlauben keinen direkten Zugriff. Kopiere die Beschreibung und füge sie ins Textfeld ein.', 'err');
+    return;
+  }
+  setImportStatus('Website wird geladen…');
+  try {
+    const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
+    if (!res.ok) throw new Error('Seite nicht erreichbar');
+    const data = await res.json();
+    const html = data.contents;
+    if (!html) throw new Error('Kein Inhalt erhalten');
+
+    // Versuche zuerst JSON-LD (strukturierte Rezeptdaten)
+    const recipe = parseJsonLd(html);
+    if (recipe) {
+      if (recipe.title) document.getElementById('fTitle').value = recipe.title;
+      if (recipe.text)  document.getElementById('fText').value  = recipe.text;
+      if (!document.getElementById('fLink').value) document.getElementById('fLink').value = url;
+      document.getElementById('urlImportWrap').classList.add('hidden');
+      setImportStatus('Rezept erfolgreich importiert.', 'ok');
+      setTimeout(clearImportStatus, 3000);
+      return;
+    }
+
+    // Fallback: einfacher Text aus HTML
+    const text = stripHtml(html);
+    if (text.length < 80) throw new Error('Zu wenig Text gefunden');
+    document.getElementById('fText').value = text.slice(0, 4000);
+    if (!document.getElementById('fLink').value) document.getElementById('fLink').value = url;
+    document.getElementById('urlImportWrap').classList.add('hidden');
+    setImportStatus('Text importiert — bitte überprüfen und anpassen.', 'ok');
+    setTimeout(clearImportStatus, 4000);
+  } catch (err) {
+    setImportStatus('Fehler: ' + err.message, 'err');
+  }
+}
+
+function parseJsonLd(html) {
+  try {
+    const matches = [...html.matchAll(/<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)];
+    for (const m of matches) {
+      let data;
+      try { data = JSON.parse(m[1]); } catch { continue; }
+      const items = Array.isArray(data) ? data : (data['@graph'] || [data]);
+      for (const item of items) {
+        if (item['@type'] !== 'Recipe') continue;
+
+        const title = item.name || '';
+        const parts = [];
+
+        // Zutaten
+        const ings = item.recipeIngredient || [];
+        if (ings.length) parts.push('Zutaten:\n' + ings.map(i => '• ' + i).join('\n'));
+
+        // Schritte
+        const steps = item.recipeInstructions || [];
+        if (steps.length) {
+          const stepTexts = steps.map((s, i) => {
+            const txt = typeof s === 'string' ? s : (s.text || s.name || '');
+            return `${i + 1}. ${txt}`;
+          });
+          parts.push('Zubereitung:\n' + stepTexts.join('\n'));
+        }
+
+        // Beschreibung
+        if (item.description && !parts.length) parts.unshift(item.description);
+
+        // Zeit
+        const time = item.totalTime || item.cookTime || '';
+        if (time) parts.push('Zeit: ' + time.replace('PT','').replace('M',' min').replace('H',' Std.'));
+
+        if (title || parts.length) return { title, text: parts.join('\n\n') };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function stripHtml(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script,style,nav,footer,header,aside,iframe').forEach(el => el.remove());
+  return (doc.body?.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /* ── Service Worker ──────────────────────────────────────── */
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
