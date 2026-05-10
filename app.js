@@ -340,11 +340,12 @@ document.getElementById('ocrFileInput').addEventListener('change', async e => {
     await loadTesseract();
     setImportStatus('Bild wird gescannt…');
     const result = await Tesseract.recognize(file, 'deu+eng', { logger: () => {} });
-    const text = result.data.text.trim();
-    if (!text) { setImportStatus('Kein Text erkannt. Versuche ein schärferes Bild.', 'err'); return; }
+    const raw = result.data.text.trim();
+    if (!raw) { setImportStatus('Kein Text erkannt. Versuche ein schärferes Bild.', 'err'); return; }
+    const cleaned = filterRecipeText(raw);
     const existing = document.getElementById('fText').value.trim();
-    document.getElementById('fText').value = existing ? existing + '\n\n' + text : text;
-    setImportStatus('Text erfolgreich erkannt und eingefügt.', 'ok');
+    document.getElementById('fText').value = existing ? existing + '\n\n' + cleaned : cleaned;
+    setImportStatus('Text erkannt und gefiltert — bitte kurz prüfen.', 'ok');
     setTimeout(clearImportStatus, 3000);
   } catch (err) {
     setImportStatus('Fehler beim Scannen: ' + err.message, 'err');
@@ -381,6 +382,32 @@ document.getElementById('importUrlInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') document.getElementById('btnFetchUrl').click();
 });
 
+const CORS_PROXIES = [
+  u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
+  u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+];
+
+async function fetchViaProxy(url) {
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const res = await fetch(proxy(url), { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) continue;
+      const ct = res.headers.get('content-type') || '';
+      // allorigins wraps in JSON, others return raw HTML
+      if (ct.includes('application/json')) {
+        const data = await res.json();
+        const html = data.contents || data.body || '';
+        if (html.length > 200) return html;
+      } else {
+        const html = await res.text();
+        if (html.length > 200) return html;
+      }
+    } catch { continue; }
+  }
+  throw new Error('Seite konnte über keinen Proxy geladen werden. Versuche den Text manuell zu kopieren.');
+}
+
 async function importFromUrl(url) {
   if (SOCIAL.some(d => url.includes(d))) {
     setImportStatus('Instagram, TikTok & Co. erlauben keinen direkten Zugriff. Kopiere die Beschreibung und füge sie ins Textfeld ein.', 'err');
@@ -388,11 +415,7 @@ async function importFromUrl(url) {
   }
   setImportStatus('Website wird geladen…');
   try {
-    const res = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`);
-    if (!res.ok) throw new Error('Seite nicht erreichbar');
-    const data = await res.json();
-    const html = data.contents;
-    if (!html) throw new Error('Kein Inhalt erhalten');
+    const html = await fetchViaProxy(url);
 
     // Versuche zuerst JSON-LD (strukturierte Rezeptdaten)
     const recipe = parseJsonLd(html);
@@ -417,6 +440,39 @@ async function importFromUrl(url) {
   } catch (err) {
     setImportStatus('Fehler: ' + err.message, 'err');
   }
+}
+
+function filterRecipeText(raw) {
+  const UNITS = /\b(\d[\d.,/]*\s*(g|kg|ml|l|EL|TL|Stück|Prise|Bund|Dose|Pkg|Packung|Becher|Tasse|Scheibe|Zweig|Zehe|Msp\.?|oz|cup|tbsp|tsp|lb))\b/i;
+  const STEP_START = /^(\d+[\.\)]\s|[-•]\s)/;
+  const COOK_WORDS = /\b(kochen|backen|braten|schneiden|hacken|mischen|rühren|erhitzen|dünsten|garen|würzen|salzen|pfeffern|servieren|vermengen|zugeben|hinzufügen|abschmecken|aufkochen|schälen|waschen|cook|bake|fry|mix|stir|heat|chop|add|season|serve|preheat)\b/i;
+  const JUNK = /^(impressum|datenschutz|newsletter|cookie|anmelden|registrieren|login|passwort|suche|navigation|menü|menu|share|teilen|facebook|instagram|pinterest|twitter|drucken|print|bewertung|rating|kommentar|comment|\d{1,2}:\d{2}|©|alle rechte|all rights)/i;
+
+  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+  const scored = lines.map(line => {
+    if (line.length < 2) return { line, score: -1 };
+    if (JUNK.test(line)) return { line, score: -1 };
+    let score = 0;
+    if (UNITS.test(line)) score += 3;
+    if (STEP_START.test(line)) score += 2;
+    if (COOK_WORDS.test(line)) score += 2;
+    if (line.length > 20 && line.length < 200) score += 1;
+    if (/zutaten|ingredients|zubereitung|instructions|method/i.test(line)) score += 3;
+    return { line, score };
+  });
+
+  // Keep lines with score > 0, plus any line directly after a heading (score >= 3)
+  const result = [];
+  for (let i = 0; i < scored.length; i++) {
+    if (scored[i].score > 0) result.push(scored[i].line);
+    else if (i > 0 && scored[i - 1].score >= 3 && scored[i].score >= 0) result.push(scored[i].line);
+  }
+
+  // If nothing matched (e.g. all English text with no known words), return lightly cleaned original
+  if (result.length < 3) {
+    return lines.filter(l => l.length > 5 && !JUNK.test(l)).join('\n');
+  }
+  return result.join('\n');
 }
 
 function parseJsonLd(html) {
